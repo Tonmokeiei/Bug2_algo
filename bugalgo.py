@@ -28,16 +28,15 @@ class Bug2Controller(Node):
 
         # Robot parameters
         self.forward_speed = 0.1
-        self.turning_speed = 0.5
-        self.dist_thresh_obs = 0.3
-        self.dist_too_close_to_wall = 0.3 #ห่างจากกำแพงเท่าไหร่
-        self.dist_thresh_wf = 0.4
+        self.turning_speed = 1.7  # เพิ่มจาก 0.5 เป็น 0.7 เพื่อตอบสนองเร็วขึ้น
+        self.dist_too_close_to_wall = 0.27  # ปรับจาก 0.3 เป็น 0.4 (40 ซม.)
+        self.dist_thresh_wf = 0.35          # ปรับจาก 0.4 เป็น 0.6 (60 ซม.)
 
         # State variables
         self.current_x = 0.0
         self.current_y = 0.0
         self.current_yaw = 0.0
-        self.goal_x = 4.0
+        self.goal_x = 4.3
         self.goal_y = 0.0
         self.start_x = 0.0
         self.start_y = 0.0
@@ -56,9 +55,9 @@ class Bug2Controller(Node):
         self.leave_point_y = 0.0
         self.distance_to_goal_from_hit_point = 0.0
         self.distance_to_goal_from_leave_point = 0.0
-        self.dist_thresh_bug2 = 0.3  # ปรับเป็น 30 ซม. (0.3 เมตร)
-        self.distance_to_start_goal_line_precision = 0.1
-        self.leave_point_to_hit_point_diff = 0.25
+        self.dist_thresh_bug2 = 0.3  # ปรับจาก 0.3 เป็น 0.5 (50 ซม.) เพื่อตอบสนองไกลขึ้น
+        self.distance_to_start_goal_line_precision = 0.1 #สำคัณเลยอันนี้
+        self.leave_point_to_hit_point_diff = 0.05
         self.yaw_precision = math.radians(5.0)
         self.dist_precision = 0.1
 
@@ -98,12 +97,28 @@ class Bug2Controller(Node):
         self.publish_start_goal_line_marker()
 
     def scan_callback(self, msg):
-        self.left_dist = msg.ranges[90]
-        self.leftfront_dist = msg.ranges[45]
-        self.front_dist = msg.ranges[0]
-        self.rightfront_dist = msg.ranges[315]
-        self.right_dist = msg.ranges[270]
-        self.get_logger().info(f"Scan: F={self.front_dist}, LF={self.leftfront_dist}, RF={self.rightfront_dist}")
+        num_ranges = len(msg.ranges)
+        if num_ranges == 0:
+            self.get_logger().warn("No laser scan data received!")
+            return
+
+        angle_increment = (msg.angle_max - msg.angle_min) / (num_ranges - 1) if num_ranges > 1 else 0
+        if angle_increment == 0:
+            self.get_logger().warn("Invalid angle increment, skipping scan data")
+            return
+
+        def get_index(angle_deg):
+            angle_rad = math.radians(angle_deg)
+            index = int((angle_rad - msg.angle_min) / angle_increment)
+            return min(max(index, 0), num_ranges - 1)
+
+        self.front_dist = msg.ranges[get_index(0)]
+        self.leftfront_dist = msg.ranges[get_index(45)]
+        self.left_dist = msg.ranges[get_index(90)]
+        self.right_dist = msg.ranges[get_index(270)]
+        self.rightfront_dist = msg.ranges[get_index(315)]
+
+        self.get_logger().info(f"Scan: F={self.front_dist}, LF={self.leftfront_dist}, RF={self.rightfront_dist}, num_ranges={num_ranges}")
 
     def odom_callback(self, msg):
         self.current_x = msg.pose.pose.position.x
@@ -134,13 +149,13 @@ class Bug2Controller(Node):
         msg = Twist()
         self.get_logger().info(f"Go to goal - State: {self.go_to_goal_state}")
 
-        # หยุดเมื่อเข้าใกล้กำแพงที่ระยะ 30 ซม.
+        # ตรวจจับสิ่งกีดขวางในระยะไกลขึ้น (0.5 m)
         if (self.front_dist < self.dist_thresh_bug2 or 
             self.leftfront_dist < self.dist_thresh_bug2 or 
             self.rightfront_dist < self.dist_thresh_bug2):
-            if self.front_dist < self.dist_thresh_bug2:  # หยุดก่อน แล้วเปลี่ยนโหมด
+            if self.front_dist < self.dist_thresh_bug2:
                 status_msg = String()
-                status_msg.data = f"Stopped 30 cm before obstacle at ({self.current_x}, {self.current_y})"
+                status_msg.data = f"Stopped 50 cm before obstacle at ({self.current_x}, {self.current_y})"
                 self.status_pub.publish(status_msg)
                 msg.linear.x = 0.0
                 msg.angular.z = 0.0
@@ -153,7 +168,7 @@ class Bug2Controller(Node):
                 )
                 self.publish_hit_point_marker()
                 return
-            else:  # หมุนเพื่อหลีกเลี่ยงก่อนถึง 30 ซม.
+            else:
                 self.robot_mode = "wall following mode"
                 self.hit_point_x = self.current_x
                 self.hit_point_y = self.current_y
@@ -164,7 +179,7 @@ class Bug2Controller(Node):
                 status_msg = String()
                 status_msg.data = f"Hit obstacle at ({self.hit_point_x}, {self.hit_point_y})"
                 self.status_pub.publish(status_msg)
-                msg.angular.z = self.turning_speed
+                msg.angular.z = self.turning_speed  # 0.7 เพื่อหมุนเร็วขึ้น
                 self.cmd_vel_pub.publish(msg)
                 return
 
@@ -176,7 +191,7 @@ class Bug2Controller(Node):
             yaw_error += 2 * math.pi
 
         if abs(yaw_error) > self.yaw_precision:
-            msg.angular.z = self.turning_speed if yaw_error > 0 else -self.turning_speed
+            msg.angular.z = self.turning_speed if yaw_error > 0 else -self.turning_speed  # 0.7
             self.go_to_goal_state = "adjust heading"
             status_msg = String()
             status_msg.data = "Adjusting heading"
@@ -184,7 +199,7 @@ class Bug2Controller(Node):
         else:
             distance_to_goal = math.sqrt((self.goal_x - self.current_x) ** 2 + (self.goal_y - self.current_y) ** 2)
             if distance_to_goal > self.dist_precision:
-                msg.linear.x = self.forward_speed
+                msg.linear.x = self.forward_speed  # 0.1
                 self.go_to_goal_state = "go straight"
                 status_msg = String()
                 status_msg.data = "Going straight to goal"
@@ -203,17 +218,18 @@ class Bug2Controller(Node):
 
     def follow_wall(self):
         msg = Twist()
-        d = self.dist_thresh_wf
+        d = self.dist_thresh_wf  # 60 ซม.
 
+        # ตรวจสอบการกลับมาที่เส้น start-goal line
         y_on_line = self.start_goal_line_slope_m * self.current_x + self.start_goal_line_y_intercept
         distance_to_line = abs(y_on_line - self.current_y)
-        if distance_to_line < self.distance_to_start_goal_line_precision:
+        if distance_to_line < self.distance_to_start_goal_line_precision:  # 5 ซม.
             self.leave_point_x = self.current_x
             self.leave_point_y = self.current_y
             self.distance_to_goal_from_leave_point = math.sqrt(
                 (self.goal_x - self.leave_point_x) ** 2 + (self.goal_y - self.leave_point_y) ** 2
             )
-            if self.distance_to_goal_from_hit_point - self.distance_to_goal_from_leave_point > self.leave_point_to_hit_point_diff:
+            if self.distance_to_goal_from_hit_point - self.distance_to_goal_from_leave_point > self.leave_point_to_hit_point_diff:  # 10 ซม.
                 self.robot_mode = "go to goal mode"
                 self.publish_leave_point_marker()
                 status_msg = String()
@@ -221,24 +237,26 @@ class Bug2Controller(Node):
                 self.status_pub.publish(status_msg)
                 return
 
+        # ปรับพฤติกรรมให้ตอบสนองสิ่งกีดขวางเร็วขึ้น
         if self.front_dist > d and self.rightfront_dist > d and self.leftfront_dist > d:
             self.wall_following_state = "search for wall"
-            msg.linear.x = self.forward_speed
-            msg.angular.z = -self.turning_speed * 0.5
+            msg.linear.x = self.forward_speed * 0.8  # 0.08
+            msg.angular.z = -self.turning_speed * 0.7  # -0.49
         elif self.front_dist < d:
             self.wall_following_state = "turn left"
-            msg.angular.z = self.turning_speed
+            msg.angular.z = self.turning_speed  # 0.7 เพื่อหมุนเร็วขึ้น
         elif self.rightfront_dist < d and self.rightfront_dist > self.dist_too_close_to_wall:
             self.wall_following_state = "follow wall"
-            msg.linear.x = self.forward_speed
+            msg.linear.x = self.forward_speed  # 0.1
         elif self.rightfront_dist < self.dist_too_close_to_wall:
             self.wall_following_state = "turn left"
-            msg.angular.z = self.turning_speed
+            msg.angular.z = self.turning_speed * 0.8  # 0.56 เพื่อหมุนเร็วขึ้น
         else:
-            msg.linear.x = self.forward_speed
+            self.wall_following_state = "go straight"
+            msg.linear.x = self.forward_speed  # 0.1
 
         status_msg = String()
-        status_msg.data = f"Wall following: {self.wall_following_state}"
+        status_msg.data = f"Wall following: {self.wall_following_state}, RF={self.rightfront_dist:.2f}, Dist_to_line={distance_to_line:.2f}"
         self.status_pub.publish(status_msg)
         self.cmd_vel_pub.publish(msg)
 
